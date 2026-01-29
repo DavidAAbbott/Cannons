@@ -5,9 +5,7 @@ using System.Collections;
 public class Ball : MonoBehaviour
 {
     [HideInInspector]
-    public float angleDegrees;
-    [HideInInspector]
-    public float angleRadians;
+    public Vector3 firingDirection; // Direction the barrel is pointing
     [HideInInspector]
     public float initialVelocity;
 
@@ -23,70 +21,64 @@ public class Ball : MonoBehaviour
     public Text winText;
     [HideInInspector]
     public GameObject[] obstaclesList;
+    [HideInInspector]
+    public GameObject explosionPrefab; // Explosion effect
+    
+    [HideInInspector]
+    public GameObject owner; // The player who fired this ball
 
-    public float immunityTime = 0.5f;
+    private bool hasClearedShooter = false; // logic: must leave shooter's body before strictly checking collision
+    
+    // Scene boundaries
+    public float groundY = -0.5f; // User adjustable ground level
+    
+    // Scene boundaries (calculated dynamically in Start)
+    private float minX;
+    private float maxX;
+    private float minY;
+    private float maxY;
 
     private Vector3 gravity = Vector3.down * 9.8f;
-
     private Vector3 velocity;
-    private float velocityX;
-    private float velocityY;
-
-    private bool timerHasFinished = false;
 
     //Initialization
     void Start()
     {
-        //Create velocity vector using the X and Y velocity components and angle of the barrel
-        if (angleDegrees == -90)
+        // Calculate boundaries based on the main camera
+        if (Camera.main != null)
         {
-            velocityX = initialVelocity * Mathf.Cos(angleRadians);
-            velocityY = initialVelocity * Mathf.Sin(angleRadians);
-
-            velocity = new Vector3(-velocityX, velocityY);
-        }
-        else if (Mathf.Sign(angleRadians) == -1)
-        {
-            velocityX = initialVelocity * Mathf.Cos(Mathf.Abs(angleRadians));
-            velocityY = initialVelocity * Mathf.Sin(Mathf.Abs(angleRadians));
-
-            velocity = new Vector3(-velocityX, velocityY);
+            // Calculate distance from camera to Z=0 (where gameplay happens)
+            float zDist = Mathf.Abs(Camera.main.transform.position.z);
+            
+            Vector3 bottomLeft = Camera.main.ViewportToWorldPoint(new Vector3(0, 0, zDist));
+            Vector3 topRight = Camera.main.ViewportToWorldPoint(new Vector3(1, 1, zDist));
+            
+            minX = bottomLeft.x;
+            maxX = topRight.x;
+            // Floor is either the bottom of the screen OR the actual groundY, whichever is higher (visible)
+            minY = Mathf.Max(bottomLeft.y, groundY); 
+            maxY = topRight.y; 
         }
         else
         {
-            velocityX = initialVelocity * Mathf.Cos(angleRadians);
-            velocityY = initialVelocity * Mathf.Sin(angleRadians);
-
-            velocity = new Vector3(velocityX, velocityY);
+            // Fallback if no camera found
+            minX = -20f; maxX = 20f; minY = -1f; maxY = 15f;
         }
 
-        //Starts immunity timer
-        StartCoroutine(Timer());
+        // Create velocity vector using the firing direction from the barrel
+        velocity = firingDirection.normalized * initialVelocity;
     }
 
     // Update is called once per frame
     void Update()
     {
-        //Off screen collision as well as ground collision
-        if (gameObject.transform.position.x <= -18)
+        // Scene boundary checks
+        // Check EVERY frame. If we go out, snap the explosion to the boundary so it looks precise.
+        if (transform.position.x <= minX || transform.position.x >= maxX || 
+            transform.position.y <= minY || transform.position.y >= maxY)
         {
-            DestroyBall();
-
-            playerManager.SwapPlayers();
-        }
-
-        if (gameObject.transform.position.x >= 18)
-        {
-            DestroyBall();
-
-            playerManager.SwapPlayers();
-        }
-
-        if (gameObject.transform.position.y <= -1)
-        {
-            DestroyBall();
-
-            playerManager.SwapPlayers();
+            DestroyBall(true); // true = clamp to bounds
+            return; 
         }
 
         //Obstacle collision
@@ -95,28 +87,47 @@ public class Ball : MonoBehaviour
             if (gameObject.GetComponent<SpriteRenderer>().bounds.Intersects(i.GetComponent<SpriteRenderer>().bounds))
             {
                 DestroyBall();
-
-                playerManager.SwapPlayers();
+                return;
             }
         }
+        
+        //Player collision (Direct hit)
+        CheckPlayerCollision(player1);
+        CheckPlayerCollision(player2);
+    }
+    
+    void CheckPlayerCollision(GameObject player)
+    {
+        if (player == null) return;
+        
+        bool hits = gameObject.GetComponent<SpriteRenderer>().bounds.Intersects(player.GetComponent<SpriteRenderer>().bounds);
 
-        //Player collision
-        if (timerHasFinished)
+        if (player == owner)
         {
-            if (gameObject.GetComponent<SpriteRenderer>().bounds.Intersects(player1.GetComponent<SpriteRenderer>().bounds))
+            // Logic for the shooter (Self):
+            // 1. If we are currently hitting the shooter:
+            //    - If we haven't cleared them yet, IGNORE (we are spawning/emerging).
+            //    - If we HAVE cleared them (bounce back), KILL (Self-damage).
+            if (hits)
             {
-                Destroy(player1);
-                winText.text = "Player 2 wins!";
-
-                playerManager.QuitGame();
-                DestroyBall();
+                if (hasClearedShooter)
+                {
+                    DestroyBall(); // Self-kill
+                }
+                // else: ignore, still emerging
             }
-            else if (gameObject.GetComponent<SpriteRenderer>().bounds.Intersects(player2.GetComponent<SpriteRenderer>().bounds))
+            else
             {
-                Destroy(player2);
-                winText.text = "Player 1 wins!";
-
-                playerManager.QuitGame();
+                // We are NOT hitting the shooter -> we have cleared them!
+                hasClearedShooter = true;
+            }
+        }
+        else
+        {
+            // Logic for Enemy:
+            // Always kill on contact
+            if (hits)
+            {
                 DestroyBall();
             }
         }
@@ -129,17 +140,42 @@ public class Ball : MonoBehaviour
         transform.position += velocity * Time.deltaTime;
     }
 
-    //Destroys the ball and plays a sound effect
-    void DestroyBall()
+    //Destroys the ball, spawns explosion with references
+    void DestroyBall(bool clampToBounds = false)
     {
+        // Spawn explosion effect
+        if (explosionPrefab != null)
+        {
+            Vector3 spawnPos = transform.position;
+
+            // If we hit a boundary, visual look is better if we clamp the explosion to the edge
+            if (clampToBounds)
+            {
+                spawnPos.x = Mathf.Clamp(spawnPos.x, minX, maxX);
+                spawnPos.y = Mathf.Clamp(spawnPos.y, minY, maxY);
+                
+                // If we hit the floor, bump the explosion up so it sits ON UP of the ground
+                if (Mathf.Abs(spawnPos.y - minY) < 0.1f)
+                {
+                    spawnPos.y += 0.75f;
+                }
+            }
+
+            // Standard instantiation (Z comes from transform, usually 0)
+            GameObject explosion = Instantiate(explosionPrefab, spawnPos, Quaternion.identity);
+            
+            Explosion explosionScript = explosion.GetComponent<Explosion>();
+            if (explosionScript != null)
+            {
+                // Pass references so explosion can handle kill detection
+                explosionScript.player1 = player1;
+                explosionScript.player2 = player2;
+                explosionScript.winText = winText;
+                explosionScript.playerManager = playerManager;
+            }
+        }
+        
         audioSource.Play();
         Destroy(gameObject);
-    }
-
-    //Player is immune to damage until time has run out
-    IEnumerator Timer()
-    {
-        yield return new WaitForSeconds(immunityTime);
-        timerHasFinished = true;
     }
 }

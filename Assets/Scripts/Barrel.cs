@@ -7,7 +7,8 @@ public class Barrel : MonoBehaviour
     public bool shotFired = false;
 
     public float rotationSpeed = 150f;
-    public float powerModifier = 0.15f;
+    public float powerSpeed = 50f; // Percentage per second when holding arrow keys
+    public float maxVelocity = 19f; // Reduced to keep ball within screen bounds
 
     public PlayerManager playerManager;
     public AudioSource audioSource;
@@ -24,9 +25,9 @@ public class Barrel : MonoBehaviour
 
     private float zRotation = 0.01f;
     private GameObject spawnedBall;
+    private float powerPercent = 50f; // Power as percentage (0-100)
 
-    private float angle;
-    private float initialVelocity = 0;
+    public GameObject explosionPrefab; // Explosion effect when ball lands
 
     // Update is called once per frame
     void Update()
@@ -38,40 +39,42 @@ public class Barrel : MonoBehaviour
             zRotation = Mathf.Clamp(zRotation, -90, 90);
             transform.localEulerAngles = new Vector3(transform.localEulerAngles.x, transform.localEulerAngles.y, -zRotation);
 
-            //Get angle
-            if (zRotation > 0)
+            //Increase power using Up & Down arrows (smooth percentage-based)
+            if (Input.GetKey(KeyCode.UpArrow))
             {
-                angle = 90 - zRotation;
+                powerPercent += powerSpeed * Time.deltaTime;
             }
-            else if (zRotation < 0)
+            else if (Input.GetKey(KeyCode.DownArrow))
             {
-                angle = -90 - zRotation;
+                powerPercent -= powerSpeed * Time.deltaTime;
             }
-
-            //Increase power using Up & Down arrows
-            if (Input.GetKey(KeyCode.UpArrow) && zRotation != 0)
-            {
-                initialVelocity = Mathf.Clamp(initialVelocity, 0.15f, 49.85f) + powerModifier;
-            }
-            else if (Input.GetKey(KeyCode.DownArrow) && zRotation != 0)
-            {
-                initialVelocity = Mathf.Clamp(initialVelocity, 0.15f, 49.85f) - powerModifier;
-            }
+            powerPercent = Mathf.Clamp(powerPercent, 1f, 100f);
 
             //Update UI
             angleText.text = "Angle: " + Mathf.Round(zRotation).ToString() + "°";
-            powerText.text = "Power: " + Mathf.Round(initialVelocity).ToString();
+            powerText.text = "Power: " + Mathf.Round(powerPercent).ToString() + "%";
 
             //Fire when Space is let go, set variables on spawned ball
-            if (Input.GetKeyUp(KeyCode.Space) && zRotation != 0)
+            if (Input.GetKeyUp(KeyCode.Space))
             {
                 spawnedBall = Instantiate(objectToFire, spawnPoint.transform.position, Quaternion.identity);
                 Ball ballScript = spawnedBall.GetComponent<Ball>();
 
-                ballScript.initialVelocity = initialVelocity;
+                ballScript.initialVelocity = (powerPercent / 100f) * maxVelocity;
 
-                ballScript.angleDegrees = zRotation;
-                ballScript.angleRadians = angle * Mathf.Deg2Rad;
+                // Set owner reliably by checking hierarchy
+                if (transform.IsChildOf(player1.transform))
+                {
+                    ballScript.owner = player1;
+                }
+                else if (transform.IsChildOf(player2.transform))
+                {
+                    ballScript.owner = player2;
+                }
+
+                // Pass the barrel's up direction as firing direction
+                // This works correctly for both left and right facing cannons
+                ballScript.firingDirection = transform.up;
 
                 ballScript.playerManager = playerManager;
 
@@ -83,6 +86,8 @@ public class Barrel : MonoBehaviour
                 ballScript.audioSource = audioSource;
 
                 ballScript.obstaclesList = obstaclesList;
+
+                ballScript.explosionPrefab = explosionPrefab;
 
                 shotFired = true;
             }
